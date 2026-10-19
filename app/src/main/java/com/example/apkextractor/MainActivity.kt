@@ -7,11 +7,14 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -19,20 +22,23 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.graphics.drawable.toBitmap
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
             MaterialTheme(colorScheme = lightColorScheme()) {
-                Surface(Modifier.fillMaxSize()) {
-                    AppScreen()
-                }
+                Surface(Modifier.fillMaxSize()) { AppScreen() }
             }
         }
     }
@@ -43,52 +49,59 @@ class MainActivity : ComponentActivity() {
 fun AppScreen(vm: MainViewModel = viewModel()) {
     val state by vm.state.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
+    val context = LocalContext.current
 
-    // Remember the destination folder so we only ask once per session.
     var treeUri by remember { mutableStateOf<Uri?>(null) }
-    // What to run once we have a folder: extract selection, or a single app.
-    var pending by remember { mutableStateOf<AppInfo?>(null) }
-    var pendingIsSelection by remember { mutableStateOf(false) }
+    // Action to run once we have a destination folder.
+    var pendingFolderAction by remember { mutableStateOf<((Uri) -> Unit)?>(null) }
+    var sortMenuOpen by remember { mutableStateOf(false) }
 
-    val context = androidx.compose.ui.platform.LocalContext.current
-
-    // SAF folder picker (ACTION_OPEN_DOCUMENT_TREE under the hood).
     val folderPicker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocumentTree()
     ) { uri: Uri? ->
         if (uri != null) {
-            // Persist access so the URI keeps working after reboot.
             context.contentResolver.takePersistableUriPermission(
                 uri,
                 Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
             )
             treeUri = uri
-            when {
-                pendingIsSelection -> vm.extract(uri)
-                pending != null -> vm.extract(uri, pending)
-            }
+            pendingFolderAction?.invoke(uri)
         }
-        pending = null
-        pendingIsSelection = false
+        pendingFolderAction = null
     }
 
-    fun runExtraction(single: AppInfo?) {
+    // Run [action] with a destination folder, asking for one if we don't have it.
+    fun withFolder(action: (Uri) -> Unit) {
         val uri = treeUri
         if (uri == null) {
-            // No folder yet — remember intent, then ask for one.
-            pending = single
-            pendingIsSelection = single == null
+            pendingFolderAction = action
             folderPicker.launch(null)
-        } else {
-            vm.extract(uri, single)
+        } else action(uri)
+    }
+
+    // Turn a staged share URI into a system share chooser.
+    LaunchedEffect(state.shareUri) {
+        state.shareUri?.let { uri ->
+            context.startActivity(
+                Intent.createChooser(Sharing.buildSendIntent(uri), "Share APK")
+            )
+            vm.consumeShare()
         }
     }
 
     LaunchedEffect(state.lastMessage) {
-        state.lastMessage?.let {
-            snackbar.showSnackbar(it)
-            vm.clearMessage()
-        }
+        state.lastMessage?.let { snackbar.showSnackbar(it); vm.clearMessage() }
+    }
+
+    // Detail bottom sheet.
+    state.detailApp?.let { app ->
+        AppDetailSheet(
+            app = app,
+            onExtract = { withFolder { uri -> vm.extract(uri, app) }; vm.closeDetail() },
+            onShare = { vm.requestShare(app); vm.closeDetail() },
+            onSaveIcon = { withFolder { uri -> vm.extractIcon(uri, app) }; vm.closeDetail() },
+            onDismiss = vm::closeDetail,
+        )
     }
 
     Scaffold(
@@ -112,10 +125,27 @@ fun AppScreen(vm: MainViewModel = viewModel()) {
                 TopAppBar(
                     title = { Text("My APK Extractor") },
                     actions = {
+                        // Sort menu
+                        Box {
+                            IconButton(onClick = { sortMenuOpen = true }) {
+                                Icon(Icons.Default.Sort, contentDescription = "Sort")
+                            }
+                            DropdownMenu(expanded = sortMenuOpen, onDismissRequest = { sortMenuOpen = false }) {
+                                SortOrder.values().forEach { order ->
+                                    DropdownMenuItem(
+                                        text = { Text(order.label) },
+                                        onClick = { vm.setSortOrder(order); sortMenuOpen = false },
+                                        leadingIcon = {
+                                            if (order == state.sortOrder)
+                                                Icon(Icons.Default.Check, contentDescription = null)
+                                        }
+                                    )
+                                }
+                            }
+                        }
                         IconButton(onClick = vm::toggleSystemApps) {
                             Icon(
-                                if (state.showSystemApps) Icons.Default.Android
-                                else Icons.Default.Person,
+                                if (state.showSystemApps) Icons.Default.Android else Icons.Default.Person,
                                 contentDescription = "Toggle system apps"
                             )
                         }
@@ -129,7 +159,7 @@ fun AppScreen(vm: MainViewModel = viewModel()) {
         floatingActionButton = {
             if (state.inSelectionMode) {
                 ExtendedFloatingActionButton(
-                    onClick = { runExtraction(null) },
+                    onClick = { withFolder { uri -> vm.extract(uri) } },
                     icon = { Icon(Icons.Default.Download, contentDescription = null) },
                     text = { Text(if (state.extracting) "Extracting…" else "Extract") },
                 )
@@ -137,7 +167,6 @@ fun AppScreen(vm: MainViewModel = viewModel()) {
         }
     ) { padding ->
         Column(Modifier.padding(padding).fillMaxSize()) {
-
             OutlinedTextField(
                 value = state.query,
                 onValueChange = vm::onQueryChange,
@@ -147,31 +176,26 @@ fun AppScreen(vm: MainViewModel = viewModel()) {
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
             )
 
-            if (state.loading) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            when {
+                state.loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     CircularProgressIndicator()
                 }
-            } else {
-                val apps = state.visibleApps
-                if (apps.isEmpty()) {
-                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text("No apps found")
-                    }
-                } else {
-                    LazyColumn(Modifier.fillMaxSize()) {
-                        items(apps, key = { it.packageName }) { app ->
-                            AppRow(
-                                app = app,
-                                selected = app.packageName in state.selected,
-                                selectionMode = state.inSelectionMode,
-                                onClick = {
-                                    if (state.inSelectionMode) vm.toggleSelection(app.packageName)
-                                    else runExtraction(app)
-                                },
-                                onLongClick = { vm.toggleSelection(app.packageName) },
-                            )
-                            HorizontalDivider()
-                        }
+                state.visibleApps.isEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text("No apps found")
+                }
+                else -> LazyColumn(Modifier.fillMaxSize()) {
+                    items(state.visibleApps, key = { it.packageName }) { app ->
+                        AppRow(
+                            app = app,
+                            selected = app.packageName in state.selected,
+                            selectionMode = state.inSelectionMode,
+                            onClick = {
+                                if (state.inSelectionMode) vm.toggleSelection(app.packageName)
+                                else vm.openDetail(app)
+                            },
+                            onLongClick = { vm.toggleSelection(app.packageName) },
+                        )
+                        HorizontalDivider()
                     }
                 }
             }
@@ -179,7 +203,7 @@ fun AppScreen(vm: MainViewModel = viewModel()) {
     }
 }
 
-@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun AppRow(
     app: AppInfo,
@@ -188,31 +212,117 @@ private fun AppRow(
     onClick: () -> Unit,
     onLongClick: () -> Unit,
 ) {
-    val iconBitmap = remember(app.packageName) {
-        app.icon.toBitmap(96, 96).asImageBitmap()
-    }
+    val iconBitmap = remember(app.packageName) { app.icon.toBitmap(96, 96).asImageBitmap() }
     ListItem(
-        headlineContent = {
-            Text(app.label, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        },
+        headlineContent = { Text(app.label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
         supportingContent = {
             Text(
                 "${app.packageName}\nv${app.versionName} · ${app.readableSize}" +
                     if (app.isSplit) " · split" else "",
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
+                maxLines = 2, overflow = TextOverflow.Ellipsis,
             )
         },
         leadingContent = {
             Image(bitmap = iconBitmap, contentDescription = null, modifier = Modifier.size(44.dp))
         },
         trailingContent = {
-            if (selectionMode) {
-                Checkbox(checked = selected, onCheckedChange = { onClick() })
-            } else {
-                Icon(Icons.Default.Download, contentDescription = "Extract")
-            }
+            if (selectionMode) Checkbox(checked = selected, onCheckedChange = { onClick() })
         },
         modifier = Modifier.combinedClickable(onClick = onClick, onLongClick = onLongClick),
     )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AppDetailSheet(
+    app: AppInfo,
+    onExtract: () -> Unit,
+    onShare: () -> Unit,
+    onSaveIcon: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val dateFmt = remember { SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()) }
+
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 24.dp)
+                .verticalScroll(rememberScrollState())
+        ) {
+            // Header
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Image(
+                    bitmap = remember(app.packageName) { app.icon.toBitmap(120, 120).asImageBitmap() },
+                    contentDescription = null,
+                    modifier = Modifier.size(56.dp),
+                )
+                Spacer(Modifier.width(16.dp))
+                Column {
+                    Text(app.label, style = MaterialTheme.typography.titleLarge, maxLines = 2)
+                    Text(
+                        app.packageName,
+                        style = MaterialTheme.typography.bodySmall,
+                        fontFamily = FontFamily.Monospace,
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(16.dp))
+
+            // Action buttons
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = onExtract, modifier = Modifier.weight(1f)) {
+                    Icon(Icons.Default.Download, contentDescription = null); Spacer(Modifier.width(6.dp)); Text("Extract")
+                }
+                OutlinedButton(onClick = onShare, modifier = Modifier.weight(1f)) {
+                    Icon(Icons.Default.Share, contentDescription = null); Spacer(Modifier.width(6.dp)); Text("Share")
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(onClick = onSaveIcon, modifier = Modifier.fillMaxWidth()) {
+                Icon(Icons.Default.Image, contentDescription = null); Spacer(Modifier.width(6.dp)); Text("Save icon as PNG")
+            }
+
+            Spacer(Modifier.height(20.dp))
+            HorizontalDivider()
+            Spacer(Modifier.height(12.dp))
+
+            // Facts
+            InfoRow("Version", "${app.versionName} (${app.versionCode})")
+            InfoRow("Size", app.readableSize + if (app.isSplit) "  (${app.sourceApks.size} APKs)" else "")
+            InfoRow("Min / Target SDK", "${app.minSdk} / ${app.targetSdk}")
+            InfoRow("Type", if (app.isSystemApp) "System app" else "User app")
+            if (app.lastUpdateTime > 0) InfoRow("Updated", dateFmt.format(Date(app.lastUpdateTime)))
+            if (app.firstInstallTime > 0) InfoRow("Installed", dateFmt.format(Date(app.firstInstallTime)))
+
+            Spacer(Modifier.height(16.dp))
+            Text(
+                "Permissions (${app.permissions.size})",
+                style = MaterialTheme.typography.titleMedium,
+            )
+            Spacer(Modifier.height(4.dp))
+            if (app.permissions.isEmpty()) {
+                Text("None declared", style = MaterialTheme.typography.bodyMedium)
+            } else {
+                app.permissions.forEach { perm ->
+                    Text(
+                        "• " + perm.substringAfterLast('.'),
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.padding(vertical = 1.dp),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun InfoRow(label: String, value: String) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
+        Text(label, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.width(140.dp))
+        Text(value, style = MaterialTheme.typography.bodyMedium)
+    }
 }

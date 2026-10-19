@@ -10,22 +10,17 @@ import java.io.File
 /**
  * Reads the list of installed apps from PackageManager.
  *
- * This is the heart of the original app's MainActivity:
- *   getPackageManager().getInstalledApplications(GET_META_DATA)   // the list
- *   applicationInfo.publicSourceDir                               // the APK path
- *   applicationInfo.loadLabel() / loadIcon()                      // name + icon
- *   packageManager.getPackageInfo(pkg).versionName / versionCode  // version
- *   (applicationInfo.flags and FLAG_SYSTEM)                       // system vs user
+ * Core calls:
+ *   getInstalledApplications(GET_META_DATA)   // the list
+ *   applicationInfo.publicSourceDir           // the APK path (+ splitSourceDirs)
+ *   loadLabel() / loadIcon()                  // name + icon
+ *   getPackageInfo(pkg, GET_PERMISSIONS)      // version, permissions, timestamps
+ *   (flags and FLAG_SYSTEM)                   // system vs user
  */
 class AppRepository(context: Context) {
 
     private val pm: PackageManager = context.packageManager
 
-    /**
-     * Load every installed app. This can be a few hundred entries and calls
-     * loadIcon/loadLabel for each, so always run it off the main thread
-     * (the ViewModel does that on Dispatchers.IO).
-     */
     fun loadInstalledApps(): List<AppInfo> {
         val flags = PackageManager.GET_META_DATA
         val apps: List<ApplicationInfo> =
@@ -42,8 +37,7 @@ class AppRepository(context: Context) {
             try {
                 toAppInfo(appInfo)
             } catch (e: Exception) {
-                // Some entries (odd system packages) can throw; just skip them.
-                null
+                null // skip odd packages that throw
             }
         }.sortedBy { it.label.lowercase() }
     }
@@ -60,18 +54,21 @@ class AppRepository(context: Context) {
                 packageInfo.versionCode.toLong()
             }
 
-        // Base APK + any split APKs.
         val sources = buildList {
             appInfo.publicSourceDir?.let { add(it) }
             appInfo.splitSourceDirs?.let { addAll(it) }
         }
-
         val totalSize = sources.sumOf { path ->
             runCatching { File(path).length() }.getOrDefault(0L)
         }
 
         val isSystem = (appInfo.flags and ApplicationInfo.FLAG_SYSTEM) != 0 ||
                 (appInfo.flags and ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0
+
+        // minSdkVersion is available from API 24; we target minSdk 26, so it's safe.
+        val minSdk = appInfo.minSdkVersion
+
+        val permissions = packageInfo.requestedPermissions?.toList() ?: emptyList()
 
         return AppInfo(
             label = appInfo.loadLabel(pm).toString(),
@@ -80,16 +77,23 @@ class AppRepository(context: Context) {
             versionCode = versionCode,
             icon = appInfo.loadIcon(pm),
             isSystemApp = isSystem,
+            minSdk = minSdk,
+            targetSdk = appInfo.targetSdkVersion,
+            permissions = permissions,
+            firstInstallTime = packageInfo.firstInstallTime,
+            lastUpdateTime = packageInfo.lastUpdateTime,
             sourceApks = sources,
             totalSizeBytes = totalSize,
         )
     }
 
-    private fun getPackageInfoCompat(pkg: String): PackageInfo =
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            pm.getPackageInfo(pkg, PackageManager.PackageInfoFlags.of(0))
+    private fun getPackageInfoCompat(pkg: String): PackageInfo {
+        val flags = PackageManager.GET_PERMISSIONS
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            pm.getPackageInfo(pkg, PackageManager.PackageInfoFlags.of(flags.toLong()))
         } else {
             @Suppress("DEPRECATION")
-            pm.getPackageInfo(pkg, 0)
+            pm.getPackageInfo(pkg, flags)
         }
+    }
 }

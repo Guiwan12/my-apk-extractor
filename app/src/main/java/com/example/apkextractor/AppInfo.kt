@@ -3,12 +3,8 @@ package com.example.apkextractor
 import android.graphics.drawable.Drawable
 
 /**
- * One installed app, with everything we show in the list and everything we need
- * to extract it.
- *
- * This is the clean equivalent of the fields the original app stuffed into its
- * (obfuscated) model class: label, package name, version, size, the APK path(s),
- * and whether it's a system app.
+ * One installed app, with everything we show in the list/detail view and
+ * everything we need to extract it.
  */
 data class AppInfo(
     val label: String,
@@ -17,11 +13,16 @@ data class AppInfo(
     val versionCode: Long,
     val icon: Drawable,
     val isSystemApp: Boolean,
+    val minSdk: Int,
+    val targetSdk: Int,
+    /** Permissions the app declares in its manifest (may be empty). */
+    val permissions: List<String>,
+    /** Epoch millis; 0 if unknown. */
+    val firstInstallTime: Long,
+    val lastUpdateTime: Long,
     /**
      * Every APK file that makes up this app. Index 0 is the base APK
-     * (publicSourceDir); any extra entries are split APKs (splitSourceDirs),
-     * e.g. per-density or per-language splits. Modern apps are often splits —
-     * the original only copied the base, which is the one real gap in it.
+     * (publicSourceDir); any extra entries are split APKs (splitSourceDirs).
      */
     val sourceApks: List<String>,
     /** Total size in bytes across base + splits. */

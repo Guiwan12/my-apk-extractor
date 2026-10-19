@@ -11,17 +11,25 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+enum class SortOrder(val label: String) {
+    NAME("Name"),
+    SIZE_DESC("Size"),
+    UPDATED_DESC("Last updated"),
+}
+
 /** Immutable snapshot of everything the screen needs to render. */
 data class UiState(
     val loading: Boolean = true,
     val allApps: List<AppInfo> = emptyList(),
     val query: String = "",
     val showSystemApps: Boolean = false,
+    val sortOrder: SortOrder = SortOrder.NAME,
     val selected: Set<String> = emptySet(), // package names
+    val detailApp: AppInfo? = null,          // app shown in the detail sheet
     val extracting: Boolean = false,
+    val shareUri: Uri? = null,               // one-shot: launch a share chooser
     val lastMessage: String? = null,
 ) {
-    /** The filtered list actually shown, derived from the raw list + filters. */
     val visibleApps: List<AppInfo>
         get() = allApps
             .filter { showSystemApps || !it.isSystemApp }
@@ -29,6 +37,13 @@ data class UiState(
                 query.isBlank() ||
                     it.label.contains(query, ignoreCase = true) ||
                     it.packageName.contains(query, ignoreCase = true)
+            }
+            .let { list ->
+                when (sortOrder) {
+                    SortOrder.NAME -> list.sortedBy { it.label.lowercase() }
+                    SortOrder.SIZE_DESC -> list.sortedByDescending { it.totalSizeBytes }
+                    SortOrder.UPDATED_DESC -> list.sortedByDescending { it.lastUpdateTime }
+                }
             }
 
     val inSelectionMode: Boolean get() = selected.isNotEmpty()
@@ -41,9 +56,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state.asStateFlow()
 
-    init {
-        refresh()
-    }
+    init { refresh() }
 
     fun refresh() {
         _state.value = _state.value.copy(loading = true)
@@ -53,13 +66,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun onQueryChange(q: String) {
-        _state.value = _state.value.copy(query = q)
-    }
-
-    fun toggleSystemApps() {
-        _state.value = _state.value.copy(showSystemApps = !_state.value.showSystemApps)
-    }
+    fun onQueryChange(q: String) { _state.value = _state.value.copy(query = q) }
+    fun toggleSystemApps() { _state.value = _state.value.copy(showSystemApps = !_state.value.showSystemApps) }
+    fun setSortOrder(order: SortOrder) { _state.value = _state.value.copy(sortOrder = order) }
 
     fun toggleSelection(pkg: String) {
         val current = _state.value.selected
@@ -69,23 +78,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun selectAllVisible() {
-        _state.value = _state.value.copy(
-            selected = _state.value.visibleApps.map { it.packageName }.toSet()
-        )
+        _state.value = _state.value.copy(selected = _state.value.visibleApps.map { it.packageName }.toSet())
     }
 
-    fun clearSelection() {
-        _state.value = _state.value.copy(selected = emptySet())
-    }
+    fun clearSelection() { _state.value = _state.value.copy(selected = emptySet()) }
+    fun openDetail(app: AppInfo) { _state.value = _state.value.copy(detailApp = app) }
+    fun closeDetail() { _state.value = _state.value.copy(detailApp = null) }
+    fun clearMessage() { _state.value = _state.value.copy(lastMessage = null) }
+    fun consumeShare() { _state.value = _state.value.copy(shareUri = null) }
 
-    fun clearMessage() {
-        _state.value = _state.value.copy(lastMessage = null)
-    }
-
-    /**
-     * Extract either the current selection, or a single app if [single] is given
-     * (a tap-and-hold-free "extract this one" path).
-     */
+    /** Extract the current selection, or a single app if [single] is given. */
     fun extract(treeUri: Uri, single: AppInfo? = null) {
         val targets: List<AppInfo> = when {
             single != null -> listOf(single)
@@ -96,8 +98,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         _state.value = _state.value.copy(extracting = true)
         viewModelScope.launch {
             val app = getApplication<Application>()
-            var ok = 0
-            var failed = 0
+            var ok = 0; var failed = 0
             withContext(Dispatchers.IO) {
                 targets.forEach { target ->
                     when (ApkExtractor.extract(app, treeUri, target)) {
@@ -107,15 +108,36 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
             val msg = buildString {
-                append("Extracted $ok APK")
-                if (ok != 1) append("s")
+                append("Extracted $ok APK"); if (ok != 1) append("s")
                 if (failed > 0) append(", $failed failed")
             }
-            _state.value = _state.value.copy(
-                extracting = false,
-                selected = emptySet(),
-                lastMessage = msg,
-            )
+            _state.value = _state.value.copy(extracting = false, selected = emptySet(), lastMessage = msg)
+        }
+    }
+
+    /** Save a single app's icon as a PNG into the chosen folder. */
+    fun extractIcon(treeUri: Uri, app: AppInfo) {
+        viewModelScope.launch {
+            val ctx = getApplication<Application>()
+            val result = withContext(Dispatchers.IO) { ApkExtractor.extractIcon(ctx, treeUri, app) }
+            val msg = when (result) {
+                is ApkExtractor.Result.Success -> "Saved ${result.fileName}"
+                is ApkExtractor.Result.Failure -> "Couldn't save icon"
+            }
+            _state.value = _state.value.copy(lastMessage = msg)
+        }
+    }
+
+    /** Stage the APK for sharing, then emit a URI the UI turns into a chooser. */
+    fun requestShare(app: AppInfo) {
+        viewModelScope.launch {
+            val ctx = getApplication<Application>()
+            try {
+                val uri = withContext(Dispatchers.IO) { Sharing.prepareShareUri(ctx, app) }
+                _state.value = _state.value.copy(shareUri = uri)
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(lastMessage = "Couldn't prepare APK to share")
+            }
         }
     }
 }

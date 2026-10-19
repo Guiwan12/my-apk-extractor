@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- Maps to context.cacheDir/shared, where Sharing.kt stages APKs. -->
+    <cache-path name="shared" path="shared/" />
+</paths>

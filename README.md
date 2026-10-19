@@ -10,7 +10,12 @@ any existing app.
 - Lists every installed app (name, package, version, size, icon)
 - Toggles between user apps and system apps
 - Search by name or package
-- Tap an app to extract it; long-press to multi-select, then extract many at once
+- Tap an app for a detail sheet (version, size, min/target SDK, install/update
+  dates, and the full list of declared permissions)
+- From the detail sheet: **Extract** the APK, **Share** it to another app, or
+  **save the icon as a PNG**
+- Long-press to multi-select, then extract many at once
+- **Sort** by name, size, or last-updated
 - Saves to any folder you pick (Downloads, SD card, etc.) via the Storage Access
   Framework — no storage permission needed
 - Handles **split APKs**: multi-part apps are bundled into a single `.apks` zip
