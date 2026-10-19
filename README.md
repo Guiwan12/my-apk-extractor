@@ -17,6 +17,9 @@ any existing app.
   **save the icon as a PNG**
 - Long-press to multi-select, then extract many at once
 - **Sort** by name, size, or last-updated
+- **Theme** picker (overflow menu): System default (auto light/dark), Light,
+  Dark, or AMOLED black — the choice is remembered across restarts
+- Tap or long-press an app's **package name** in the detail sheet to copy it
 - Saves to any folder you pick (Downloads, SD card, etc.) via the Storage Access
   Framework — no storage permission needed
 - Handles **split APKs**: multi-part apps are bundled into a single `.apks` zip

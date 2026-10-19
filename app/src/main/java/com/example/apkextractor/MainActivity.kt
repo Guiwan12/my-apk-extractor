@@ -11,6 +11,7 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -22,13 +23,16 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.graphics.drawable.toBitmap
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -37,8 +41,17 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            MaterialTheme(colorScheme = lightColorScheme()) {
-                Surface(Modifier.fillMaxSize()) { AppScreen() }
+            var themeMode by remember { mutableStateOf(ThemeStore.load(this)) }
+            MaterialTheme(colorScheme = colorSchemeFor(themeMode)) {
+                Surface(Modifier.fillMaxSize()) {
+                    AppScreen(
+                        themeMode = themeMode,
+                        onPickTheme = { mode ->
+                            themeMode = mode
+                            ThemeStore.save(this, mode)
+                        },
+                    )
+                }
             }
         }
     }
@@ -46,15 +59,28 @@ class MainActivity : ComponentActivity() {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun AppScreen(vm: MainViewModel = viewModel()) {
+fun AppScreen(
+    vm: MainViewModel = viewModel(),
+    themeMode: ThemeMode = ThemeMode.SYSTEM,
+    onPickTheme: (ThemeMode) -> Unit = {},
+) {
     val state by vm.state.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
     val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
+    val scope = rememberCoroutineScope()
 
     var treeUri by remember { mutableStateOf<Uri?>(null) }
     // Action to run once we have a destination folder.
     var pendingFolderAction by remember { mutableStateOf<((Uri) -> Unit)?>(null) }
     var sortMenuOpen by remember { mutableStateOf(false) }
+    var overflowOpen by remember { mutableStateOf(false) }
+    var themeDialogOpen by remember { mutableStateOf(false) }
+
+    fun copyPackage(pkg: String) {
+        clipboard.setText(AnnotatedString(pkg))
+        scope.launch { snackbar.showSnackbar("Copied $pkg") }
+    }
 
     val folderPicker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocumentTree()
@@ -100,6 +126,7 @@ fun AppScreen(vm: MainViewModel = viewModel()) {
             onExtract = { withFolder { uri -> vm.extract(uri, app) }; vm.closeDetail() },
             onShare = { vm.requestShare(app); vm.closeDetail() },
             onSaveIcon = { withFolder { uri -> vm.extractIcon(uri, app) }; vm.closeDetail() },
+            onCopyPackage = { copyPackage(app.packageName) },
             onDismiss = vm::closeDetail,
         )
     }
@@ -110,6 +137,15 @@ fun AppScreen(vm: MainViewModel = viewModel()) {
             fraction = fraction,
             label = state.progressLabel.orEmpty(),
             destination = state.progressDest,
+        )
+    }
+
+    // Theme picker.
+    if (themeDialogOpen) {
+        ThemeDialog(
+            current = themeMode,
+            onPick = { onPickTheme(it); themeDialogOpen = false },
+            onDismiss = { themeDialogOpen = false },
         )
     }
 
@@ -160,6 +196,18 @@ fun AppScreen(vm: MainViewModel = viewModel()) {
                         }
                         IconButton(onClick = vm::refresh) {
                             Icon(Icons.Default.Refresh, contentDescription = "Refresh")
+                        }
+                        Box {
+                            IconButton(onClick = { overflowOpen = true }) {
+                                Icon(Icons.Default.MoreVert, contentDescription = "More")
+                            }
+                            DropdownMenu(expanded = overflowOpen, onDismissRequest = { overflowOpen = false }) {
+                                DropdownMenuItem(
+                                    text = { Text("Theme") },
+                                    leadingIcon = { Icon(Icons.Default.Palette, contentDescription = null) },
+                                    onClick = { overflowOpen = false; themeDialogOpen = true },
+                                )
+                            }
                         }
                     }
                 )
@@ -241,13 +289,14 @@ private fun AppRow(
     )
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 private fun AppDetailSheet(
     app: AppInfo,
     onExtract: () -> Unit,
     onShare: () -> Unit,
     onSaveIcon: () -> Unit,
+    onCopyPackage: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -269,13 +318,21 @@ private fun AppDetailSheet(
                     modifier = Modifier.size(56.dp),
                 )
                 Spacer(Modifier.width(16.dp))
-                Column {
+                Column(Modifier.weight(1f)) {
                     Text(app.label, style = MaterialTheme.typography.titleLarge, maxLines = 2)
+                    // Tap or long-press the package name to copy it.
                     Text(
                         app.packageName,
                         style = MaterialTheme.typography.bodySmall,
                         fontFamily = FontFamily.Monospace,
+                        modifier = Modifier.combinedClickable(
+                            onClick = onCopyPackage,
+                            onLongClick = onCopyPackage,
+                        ),
                     )
+                }
+                IconButton(onClick = onCopyPackage) {
+                    Icon(Icons.Default.ContentCopy, contentDescription = "Copy package name")
                 }
             }
 
@@ -364,6 +421,38 @@ private fun ExtractionProgressDialog(
                 destination?.let {
                     Spacer(Modifier.height(4.dp))
                     Text("→ $it", style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        },
+    )
+}
+
+@Composable
+private fun ThemeDialog(
+    current: ThemeMode,
+    onPick: (ThemeMode) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("Close") }
+        },
+        title = { Text("Theme") },
+        text = {
+            Column {
+                ThemeMode.entries.forEach { mode ->
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .selectable(selected = mode == current, onClick = { onPick(mode) })
+                            .padding(vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RadioButton(selected = mode == current, onClick = { onPick(mode) })
+                        Spacer(Modifier.width(8.dp))
+                        Text(mode.label)
+                    }
                 }
             }
         },
