@@ -2,6 +2,7 @@ package com.example.apkextractor
 
 import android.app.Application
 import android.net.Uri
+import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
@@ -27,6 +28,10 @@ data class UiState(
     val selected: Set<String> = emptySet(), // package names
     val detailApp: AppInfo? = null,          // app shown in the detail sheet
     val extracting: Boolean = false,
+    // Live extraction progress (null when idle) — drives the progress window.
+    val progressFraction: Float? = null,     // 0f..1f
+    val progressLabel: String? = null,       // e.g. "Extracting Maps (2/5)"
+    val progressDest: String? = null,        // destination folder name
     val shareUri: Uri? = null,               // one-shot: launch a share chooser
     val lastMessage: String? = null,
 ) {
@@ -95,13 +100,36 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
         if (targets.isEmpty()) return
 
-        _state.value = _state.value.copy(extracting = true)
+        val total = targets.sumOf { it.totalSizeBytes }.coerceAtLeast(1L)
+        val app = getApplication<Application>()
+        val destName = DocumentFile.fromTreeUri(app, treeUri)?.name ?: "selected folder"
+
+        _state.value = _state.value.copy(
+            extracting = true,
+            progressFraction = 0f,
+            progressLabel = "Starting…",
+            progressDest = destName,
+        )
         viewModelScope.launch {
-            val app = getApplication<Application>()
             var ok = 0; var failed = 0
+            var copied = 0L
+            var lastEmit = 0L
             withContext(Dispatchers.IO) {
-                targets.forEach { target ->
-                    when (ApkExtractor.extract(app, treeUri, target)) {
+                targets.forEachIndexed { index, target ->
+                    _state.value = _state.value.copy(
+                        progressLabel = "Extracting ${target.label} (${index + 1}/${targets.size})"
+                    )
+                    val result = ApkExtractor.extract(app, treeUri, target) { delta ->
+                        copied += delta
+                        // Throttle UI updates to ~every 256 KB so we don't flood state.
+                        if (copied - lastEmit >= 256 * 1024 || copied >= total) {
+                            lastEmit = copied
+                            _state.value = _state.value.copy(
+                                progressFraction = (copied.toFloat() / total).coerceIn(0f, 1f)
+                            )
+                        }
+                    }
+                    when (result) {
                         is ApkExtractor.Result.Success -> ok++
                         is ApkExtractor.Result.Failure -> failed++
                     }
@@ -109,9 +137,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             }
             val msg = buildString {
                 append("Extracted $ok APK"); if (ok != 1) append("s")
-                if (failed > 0) append(", $failed failed")
+                append(" to $destName")
+                if (failed > 0) append(" · $failed failed")
             }
-            _state.value = _state.value.copy(extracting = false, selected = emptySet(), lastMessage = msg)
+            _state.value = _state.value.copy(
+                extracting = false,
+                progressFraction = null,
+                progressLabel = null,
+                progressDest = null,
+                selected = emptySet(),
+                lastMessage = msg,
+            )
         }
     }
 

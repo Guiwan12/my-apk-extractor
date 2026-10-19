@@ -11,7 +11,8 @@ any existing app.
 - Toggles between user apps and system apps
 - Search by name or package
 - Tap an app for a detail sheet (version, size, min/target SDK, install/update
-  dates, and the full list of declared permissions)
+  dates, the on-disk **file location**, and the full list of declared permissions)
+- A progress window during extraction with a live **percentage** and destination
 - From the detail sheet: **Extract** the APK, **Share** it to another app, or
   **save the icon as a PNG**
 - Long-press to multi-select, then extract many at once

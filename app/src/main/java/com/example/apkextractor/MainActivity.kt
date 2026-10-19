@@ -104,6 +104,15 @@ fun AppScreen(vm: MainViewModel = viewModel()) {
         )
     }
 
+    // Extraction progress window.
+    state.progressFraction?.let { fraction ->
+        ExtractionProgressDialog(
+            fraction = fraction,
+            label = state.progressLabel.orEmpty(),
+            destination = state.progressDest,
+        )
+    }
+
     Scaffold(
         snackbarHost = { SnackbarHost(snackbar) },
         topBar = {
@@ -299,6 +308,18 @@ private fun AppDetailSheet(
             if (app.firstInstallTime > 0) InfoRow("Installed", dateFmt.format(Date(app.firstInstallTime)))
 
             Spacer(Modifier.height(16.dp))
+            Text("File location", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(4.dp))
+            app.sourceApks.forEach { path ->
+                Text(
+                    path,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = FontFamily.Monospace,
+                    modifier = Modifier.padding(vertical = 1.dp),
+                )
+            }
+
+            Spacer(Modifier.height(16.dp))
             Text(
                 "Permissions (${app.permissions.size})",
                 style = MaterialTheme.typography.titleMedium,
@@ -317,6 +338,36 @@ private fun AppDetailSheet(
             }
         }
     }
+}
+
+@Composable
+private fun ExtractionProgressDialog(
+    fraction: Float,
+    label: String,
+    destination: String?,
+) {
+    val percent = (fraction * 100).toInt()
+    AlertDialog(
+        onDismissRequest = { /* block dismiss while extracting */ },
+        confirmButton = {},
+        title = { Text("Extracting") },
+        text = {
+            Column {
+                Text(label, style = MaterialTheme.typography.bodyMedium)
+                Spacer(Modifier.height(12.dp))
+                LinearProgressIndicator(
+                    progress = { fraction },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(8.dp))
+                Text("$percent% complete · ${100 - percent}% remaining")
+                destination?.let {
+                    Spacer(Modifier.height(4.dp))
+                    Text("→ $it", style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        },
+    )
 }
 
 @Composable
